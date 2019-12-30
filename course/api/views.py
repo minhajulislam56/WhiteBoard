@@ -17,7 +17,7 @@ from django.shortcuts import get_object_or_404
 from ProjectBeta.settings import COMMON_URL
 from django.db.models import Q
 from ProjectBeta.restconfig.pagination import PaginationHandlerMixin
-
+from accounts.api.serializers import ProfileSerializer
 
 class CourseView(APIView):
 
@@ -113,7 +113,6 @@ class CourseViewUser(APIView):
 
 
 class CourseViewSingle(APIView):
-    permission_classes = [permissions.IsAuthenticated]
     serializer_class = CourseSerializer
 
     def get(self, *args, **kwargs):
@@ -236,8 +235,8 @@ class SetPrerequisites(APIView):
 
         if not (validate_uuid4(content_id) and validate_uuid4(preq_id)):
             response_data['data'] = {}
-            response_data['errors'] = {"Check Content ID or Prerequisite ID"}
-            return Response(response_data, status=404)
+            response_data['errors'] = {"Content ID or Prerequisite ID Error"}
+            return Response(response_data, status=400)
 
         slzr = PrerequisiteSerializer(data=request.data)
         if slzr.is_valid():
@@ -247,6 +246,10 @@ class SetPrerequisites(APIView):
                 response_data['data'] = {}
                 response_data['errors'] = {"Content ID or Prerequisite ID not found"}
                 return Response(response_data, status=404)
+            if not IsCourseAuthor(self):  # Checking authorization...
+                response_data['data'] = {}
+                response_data['error'] = {"Request user is not course author"}
+                return Response(response_data, status=401)
             content_serial = (Content.objects.get(content_id=content_id)).serial
             preq_serial = (Content.objects.get(content_id=preq_id)).serial
             content_preview = (Content.objects.get(content_id=content_id)).preview
@@ -316,6 +319,10 @@ class DeleteCourseContent(APIView):
 
         is_exists = Content.objects.filter(content_id=id).exists()
         if is_exists:
+            if not IsCourseAuthor(self):  # Checking authorization...
+                response_data['data'] = {}
+                response_data['error'] = {"Request user is not course author"}
+                return Response(response_data, status=401)
             file = Content.objects.get(content_id=id)
             UpdatingContentSerial(self, request, id)  # Updating Contents Serial
             file.delete()
@@ -425,6 +432,10 @@ class ContentCompleted(generics.ListAPIView, mixins.CreateModelMixin):
 
         is_exists = Content.objects.filter(content_id=content_id).exists()
         if is_exists:
+            if not IsCourseAuthor(self):        # Checking authorization...
+                response_data['data'] = {}
+                response_data['error'] = {"Request user is not course author"}
+                return Response(response_data, status=401)
             data = self.create(request, *args, kwargs)
             response_data['data'] = data.data
             response_data['errors'] = {}
@@ -447,7 +458,11 @@ class SetContentPreview(APIView):
         if not is_exists:
             data_context['data'] = {}
             data_context['errors'] = {"No Contents Found"}
-            return Response(data_context, status=status.HTTP_404_NOT_FOUND)
+            return Response(data_context, status=404)
+        if not IsCourseAuthor(self):
+            data_context['data'] = {}
+            data_context['error'] = {"Request user is not course author"}
+            return Response(data_context, status=401)
         qs = Content.objects.filter(course_id=course_id, file_type=True)
         slzr = ContentPreviewSerializer(qs, many=True)
         data_context['data'] = slzr.data
@@ -455,12 +470,19 @@ class SetContentPreview(APIView):
         return Response(data_context, status=200)
 
     def post(self, request, *args, **kwargs):
+        data_context = {}
+        if not IsCourseAuthor(self):
+            data_context['data'] = {}
+            data_context['error'] = {"Request user is not course author"}
+            return Response(data_context, status=401)
         for data in request.data:
             content_id = data['content_id']
             qs = Prerequisite.objects.filter(Q(content_id=content_id)).exists()
             is_valid = validate_uuid4(content_id)
             if qs or not is_valid:
-                return Response({"Error": "Invalid Request"}, status=status.HTTP_400_BAD_REQUEST)
+                data_context['data'] = {}
+                data_context['error'] = {"Content ID is not valid"}
+                return Response(data_context, status=404)
         for data in request.data:
             content_id = data['content_id']
             model = Content.objects.get(content_id=content_id)
@@ -472,17 +494,25 @@ class SetContentPreview(APIView):
             if slzr.is_valid():
                 slzr.save()
             else:
-                return Response({"Error": "Invalid Request"}, status=status.HTTP_400_BAD_REQUEST)
-        return Response({"Data": "Contents marked for preview successfully"}, status=200)
+                data_context['data'] = {}
+                data_context['error'] = {"Invalid Request"}
+                return Response(data_context, status=400)
+        data_context['data'] = {"Contents marked for preview successfully"}
+        data_context['error'] = {}
+        return Response(data_context, status=200)
+
+
 
 
 class TopFiveRated(APIView):
 
     def get(self, request):
-        qs = Course.objects.all().order_by('rating')[:6]
+        qs = Course.objects.all().order_by('-rating')[:6]
         serializer = CourseSerializer(qs, many=True)
         response = CourseResponseFormat(request, serializer)
         return Response(response.data, status=200)
+
+
 
 
 class NewCourse(APIView):
@@ -496,7 +526,6 @@ class NewCourse(APIView):
 
 
 
-from accounts.api.serializers import ProfileSerializer
 class SearchView(generics.ListAPIView, PaginationHandlerMixin):
     pagination_class = FuckboyPaginagion
     serializer_class = CourseSerializer
@@ -551,5 +580,21 @@ class SearchView(generics.ListAPIView, PaginationHandlerMixin):
             return Response({'error': str(E)}, status=status.HTTP_408_REQUEST_TIMEOUT, content_type='application/json')
 
 
+
+
 class TopPurchased(APIView):
     pass
+
+
+
+
+class FreeCourseView(APIView):
+
+    def get(self, request):
+        qs = Course.objects.filter(fee=0.0).order_by('-rating')[:6]
+        serializer = CourseSerializer(qs, many=True)
+        response = CourseResponseFormat(request, serializer)
+        return Response(response.data, status=200)
+
+
+
